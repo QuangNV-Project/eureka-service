@@ -1,0 +1,30 @@
+# dependencies
+dist
+file
+target
+logs
+storage
+coverage
+screenshot
+
+# ignore gitlab
+.gitignore
+.gitlab-ci.yml
+
+# ignore docker
+.dockergignore
+Dockerfile
+Dockerfile.dev
+docker-compose.yml
+docker-compose.dev.yml
+
+.vscode
+.idea
+.temp
+.DS_Store
+
+npm-debug.log*
+yarn-error.log
+*.log
+*bak
+.history
