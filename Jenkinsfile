@@ -205,6 +205,7 @@ pipeline {
                                 docker run -d --name eureka-service \\
                                     --env-file ./infra/\$ENV_FILE \\
                                     -p \$PORT:\$PORT \\
+                                    --restart unless-stopped \\
                                     ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
                         '''
@@ -265,6 +266,7 @@ pipeline {
                                 docker run -d --name auth-service \\
                                     --env-file ./infra/\$ENV_FILE \\
                                     -p \$PORT:\$PORT \\
+                                    --restart unless-stopped \\
                                     ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
                         '''
