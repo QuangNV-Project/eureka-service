@@ -33,3 +33,4 @@ build/
 
 /openapi/node_modules
 /file
+.env

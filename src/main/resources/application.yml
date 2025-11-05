@@ -10,10 +10,16 @@ spring:
     user:
       name: ${EUREKA_NAME}
       password: ${EUREKA_PASSWORD}
+  rabbitmq:
+    host: ${RABBITMQ_HOST}
+    port: ${RABBITMQ_PORT}
+    username: ${RABBITMQ_USERNAME}
+    password: ${RABBITMQ_PASSWORD}
 
 eureka:
   instance:
     hostname: ${EUREKA_HOSTNAME}
+    prefer-ip-address: ${EUREKA_PREFER_IP_ADDRESS}
   client:
     register-with-eureka: false
     fetch-registry: false
