@@ -175,43 +175,43 @@ pipeline {
                     ]) {
                         // Pull latest image
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} << 'EOF'
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} \\
+                            << 'EOF'
                                 cd ./root_project
                                 ENV_FILE=".env.dev"
                                 echo "Branch: dev"
-                                echo "ENV_FILE: $ENV_FILE"
+                                echo "ENV_FILE: \$ENV_FILE"
                                 echo "Pulling latest image..."
-                                docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
+                                docker compose pull
                             EOF
                         """
 
-
-                        // Stop & remove old container
+                        // Stop & remove old container (optional, Docker Compose can handle it)
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} << 'EOF'
-                                docker stop eureka-service || true
-                                docker rm eureka-service || true
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} \\
+                            << 'EOF'
+                                cd ./root_project
+                                echo "Stopping old container..."
+                                docker compose down || true
                             EOF
                         """
 
                         // Run new container
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} << 'EOF'
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} \\
+                            << 'EOF'
                                 cd ./root_project
                                 ENV_FILE=".env.dev"
                                 PORT_VAR="EUREKA_SERVICE_PORT"
                                 source ./infra/\$ENV_FILE
                                 eval "PORT=\\$\$PORT_VAR"
                                 echo "Running on Server A (dev) -> Port: \$PORT"
-                                docker run -d --name eureka-service \\
-                                    --env-file ./infra/\$ENV_FILE \\
-                                    -p \$PORT:\$PORT \\
-                                    --restart unless-stopped \\
-                                    ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
+                                docker compose up -d
                             EOF
                         """
 
                         echo "✅ Deployed to DEV Server successfully"
+
                     }
                 }
             }
