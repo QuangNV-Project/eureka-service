@@ -174,7 +174,7 @@ pipeline {
                         sshUserPrivateKey(credentialsId: 'remote-ssh-key-dev', keyFileVariable: 'SSH_KEY')
                     ]) {
                         // Pull latest image
-                        sh '''
+                        sh """
                             ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
                                 cd ./root_project
                                 ENV_FILE=".env.dev"
@@ -183,18 +183,18 @@ pipeline {
                                 echo "Pulling latest image..."
                                 docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
-                        '''
+                        """
 
                         // Stop & remove old container
-                        sh '''
+                        sh """
                             ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
                                 docker stop eureka-service || true
                                 docker rm eureka-service || true
                             '
-                        '''
+                        """
 
                         // Run new container
-                        sh '''
+                        sh """
                             ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
                                 cd ./root_project
                                 ENV_FILE=".env.dev"
@@ -208,7 +208,7 @@ pipeline {
                                     --restart unless-stopped \\
                                     ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
-                        '''
+                        """
 
                         echo "✅ Deployed to DEV Server successfully"
                     }
