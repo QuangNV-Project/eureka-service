@@ -175,27 +175,28 @@ pipeline {
                     ]) {
                         // Pull latest image
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} << 'EOF'
                                 cd ./root_project
                                 ENV_FILE=".env.dev"
                                 echo "Branch: dev"
-                                echo "ENV_FILE: \$ENV_FILE"
+                                echo "ENV_FILE: $ENV_FILE"
                                 echo "Pulling latest image..."
                                 docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
-                            '
+                            EOF
                         """
+
 
                         // Stop & remove old container
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} << 'EOF'
                                 docker stop eureka-service || true
                                 docker rm eureka-service || true
-                            '
+                            EOF
                         """
 
                         // Run new container
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} << 'EOF'
                                 cd ./root_project
                                 ENV_FILE=".env.dev"
                                 PORT_VAR="EUREKA_SERVICE_PORT"
@@ -207,7 +208,7 @@ pipeline {
                                     -p \$PORT:\$PORT \\
                                     --restart unless-stopped \\
                                     ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
-                            '
+                            EOF
                         """
 
                         echo "✅ Deployed to DEV Server successfully"
