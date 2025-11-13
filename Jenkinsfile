@@ -23,7 +23,11 @@ pipeline {
         // Maven
         MAVEN_OPTS = '-Xmx1024m'
         MAVEN_SETTINGS_FILE = '.m2/settings.xml'
+        MAVEN_LOCAL_REPO = "${env.WORKSPACE}/.m2_cache/repository"
 
+        // Job data
+        JOB_NAME = "${env.JOB_NAME}"
+        BUILD_NUMBER = "${env.BUILD_NUMBER}"
     }
 
     stages {
@@ -57,6 +61,22 @@ pipeline {
             }
         }
 
+        // Cache maven
+        stage('Restore Maven Cache') {
+            steps {
+                script {
+                    echo "Restoring Maven cache (if available) from last successful build..."
+                    try {
+                        // requires Copy Artifact plugin; optional so pipeline continues if unavailable
+                        copyArtifacts(projectName: env.JOB_NAME, selector: lastSuccessful(), filter: '.m2_cache/**', optional: true)
+                        echo "✅ Maven cache restored (if present)"
+                    } catch (err) {
+                        echo "No previous cache available or copyArtifacts not configured: ${err}"
+                    }
+                }
+            }
+        }
+
         // ================================================
         // 2️⃣ PREPARE MAVEN SETTINGS
         // ================================================
@@ -66,6 +86,7 @@ pipeline {
                      configFileProvider([configFile(fileId: 'maven-settings', variable: 'MAVEN_SETTINGS_PATH')]) {
                          sh 'mkdir -p .m2'
                          sh "cp ${MAVEN_SETTINGS_PATH} ${MAVEN_SETTINGS_FILE}"
+                         sh "mkdir -p ${MAVEN_LOCAL_REPO}"
                      }
                 }
             }
@@ -81,11 +102,11 @@ pipeline {
             steps {
                 script {
                     echo "Running basic tests for branch: ${BRANCH_NAME}"
-                    
+
                     sh """
-                        mvn -s ${MAVEN_SETTINGS_FILE} clean test
+                        mvn -s ${MAVEN_SETTINGS_FILE} -Dmaven.repo.local=${MAVEN_LOCAL_REPO} clean test
                     """
-                    
+
                     echo "✅ Tests completed successfully"
                 }
             }
@@ -102,10 +123,18 @@ pipeline {
                 script {
                     echo "Building Docker image..."
 
-                    // Build Docker image
+                    // try to pull previous images to use as cache
+                    sh """
+                        docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG} || true
+                        docker pull ${DOCKERHUB_IMAGE}:latest || true
+                    """
+
+                    // Build Docker image using cache-from to speed up builds
                     sh """
                         docker build \
                             --build-arg SPRING_PROFILE=${SPRING_PROFILE} \
+                            --cache-from ${DOCKERHUB_IMAGE}:${IMAGE_TAG} \
+                            --cache-from ${DOCKERHUB_IMAGE}:latest \
                             -t ${DOCKERHUB_IMAGE}:${IMAGE_TAG} .
                     """
 
@@ -133,6 +162,18 @@ pipeline {
                     """
 
                     echo "✅ Docker image pushed successfully"
+                }
+            }
+        }
+
+        // Save Maven cache for future builds
+        stage('Save Maven Cache') {
+            steps {
+                script {
+                    echo "Saving Maven cache for future builds..."
+                    sh "mkdir -p ${env.WORKSPACE}/.m2_cache"
+                    archiveArtifacts artifacts: '.m2_cache/**', onlyIfSuccessful: true, allowEmptyArchive: true
+                    echo "✅ Maven cache archived (if present)"
                 }
             }
         }
@@ -166,7 +207,6 @@ pipeline {
                 script {
                     echo "🚀 Deploying to DEV Server..."
 
-                    // Get SSH credentials from Jenkins
                     withCredentials([
                         string(credentialsId: 'remote-server-dev-host', variable: 'REMOTE_HOST'),
                         string(credentialsId: 'remote-server-dev-user', variable: 'REMOTE_USER'),
@@ -175,43 +215,35 @@ pipeline {
                     ]) {
                         // Pull latest image
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} \\
-                            << 'EOF'
-                                cd ./root_project
-                                ENV_FILE=".env.dev"
-                                echo "Branch: dev"
-                                echo "ENV_FILE: \$ENV_FILE"
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
                                 echo "Pulling latest image..."
-                                docker compose pull
-                            EOF
+                                docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
+                            '
                         """
 
-                        // Stop & remove old container (optional, Docker Compose can handle it)
+                        // Stop & remove old container
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} \\
-                            << 'EOF'
-                                cd ./root_project
-                                echo "Stopping old container..."
-                                docker compose down || true
-                            EOF
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
+                                docker stop ${DOCKERHUB_IMAGE} || true
+                                docker rm ${DOCKERHUB_IMAGE} || true
+                            '
                         """
 
                         // Run new container
                         sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} \\
-                            << 'EOF'
-                                cd ./root_project
+                            ssh -o StrictHostKeyChecking=no -i $SSH_KEY -p $REMOTE_PORT $REMOTE_USER@$REMOTE_HOST '
                                 ENV_FILE=".env.dev"
                                 PORT_VAR="EUREKA_SERVICE_PORT"
-                                source ./infra/\$ENV_FILE
-                                eval "PORT=\\$\$PORT_VAR"
-                                echo "Running on Server A (dev) -> Port: \$PORT"
-                                docker compose up -d
-                            EOF
+                                source ./infra/\${ENV_FILE}
+                                eval "PORT=\\\$\${PORT_VAR}"
+
+                                echo "Running on Server DEV -> Port: \$PORT"
+
+                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE -p \$PORT:\$PORT --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
+                            '
                         """
 
                         echo "✅ Deployed to DEV Server successfully"
-
                     }
                 }
             }
@@ -236,41 +268,34 @@ pipeline {
                         sshUserPrivateKey(credentialsId: 'remote-ssh-key-prod', keyFileVariable: 'SSH_KEY')
                     ]) {
                         // Pull latest image
-                        sh '''
+                        sh """
                             ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                cd ./root_project
-                                ENV_FILE=".env.prod"
-                                echo "Branch: main"
-                                echo "ENV_FILE: \$ENV_FILE"
                                 echo "Pulling latest image..."
                                 docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
-                        '''
+                        """
 
                         // Stop & remove old container
-                        sh '''
+                        sh """
                             ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                docker stop eureka-service || true
-                                docker rm eureka-service || true
+                                docker stop ${DOCKERHUB_IMAGE} || true
+                                docker rm ${DOCKERHUB_IMAGE} || true
                             '
-                        '''
+                        """
 
                         // Run new container
-                        sh '''
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                cd ./root_project
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i $SSH_KEY -p $REMOTE_PORT $REMOTE_USER@$REMOTE_HOST '
                                 ENV_FILE=".env.prod"
                                 PORT_VAR="EUREKA_SERVICE_PORT"
-                                source ./infra/\$ENV_FILE
-                                eval "PORT=\\$\$PORT_VAR"
-                                echo "Running on Server B (main) -> Port: \$PORT"
-                                docker run -d --name auth-service \\
-                                    --env-file ./infra/\$ENV_FILE \\
-                                    -p \$PORT:\$PORT \\
-                                    --restart unless-stopped \\
-                                    ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
+                                source ./infra/\${ENV_FILE}
+                                eval "PORT=\\\$\${PORT_VAR}"
+
+                                echo "Running on Server PROD -> Port: \$PORT"
+
+                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE -p \$PORT:\$PORT --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
-                        '''
+                        """
 
                         echo "✅ Deployed to PROD Server successfully"
                     }
@@ -287,20 +312,37 @@ pipeline {
         }
         success {
             script {
-                echo "✅ Pipeline succeeded!"
+                withCredentials([
+                    string(credentialsId: 'telegram-bot-token', variable: 'TELEGRAM_BOT_TOKEN'),
+                    string(credentialsId: 'telegram-chat-id', variable: 'TELEGRAM_CHAT_ID')
+                ]) {
+                    sh """
+                        curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \
+                        -d chat_id=$TELEGRAM_CHAT_ID \
+                        -d text="✅ Pipeline succeeded! Project: eureka-service Job: $JOB_NAME (#$BUILD_NUMBER)"
+                    """
+                }
             }
         }
+
         failure {
             script {
-                echo "❌ Pipeline failed!"
+                withCredentials([
+                    string(credentialsId: 'telegram-bot-token', variable: 'TELEGRAM_BOT_TOKEN'),
+                    string(credentialsId: 'telegram-chat-id', variable: 'TELEGRAM_CHAT_ID')
+                ]) {
+                    sh """
+                        curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \
+                        -d chat_id=$TELEGRAM_CHAT_ID \
+                        -d text="❌ Pipeline failed! Project: eureka-service Job: $JOB_NAME (#$BUILD_NUMBER)"
+                    """
+                }
             }
         }
         cleanup {
             script {
-                // Logout from Docker Hub
                 sh 'docker logout || true'
             }
         }
     }
 }
-

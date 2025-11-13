@@ -55,7 +55,7 @@
 
     <repositories>
         <repository>
-            <id>github</id>
+            <id>github-utility-shared</id>
             <url>https://maven.pkg.github.com/QuangNV-Project/utility-shared</url>
         </repository>
     </repositories>
