@@ -239,7 +239,7 @@ pipeline {
 
                                 echo "Running on Server DEV -> Port: \$PORT"
 
-                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE -p \$PORT:\$PORT --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
+                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE --network dev-network -p \$PORT:\$PORT --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
                         """
 
@@ -293,7 +293,7 @@ pipeline {
 
                                 echo "Running on Server PROD -> Port: \$PORT"
 
-                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE -p \$PORT:\$PORT --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
+                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE --network prod-network -p \$PORT:\$PORT --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
                         """
 
