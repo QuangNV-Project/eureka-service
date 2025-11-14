@@ -1,0 +1,28 @@
+server:
+  port: ${EUREKA_SERVICE_PORT}
+spring:
+  security:
+    user:
+      name: ${EUREKA_NAME}
+      password: ${EUREKA_PASSWORD}
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  application:
+    name: eureka-service
+eureka:
+  instance:
+    hostname: ${EUREKA_HOSTNAME}
+    prefer-ip-address: ${EUREKA_PREFER_IP_ADDRESS}
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+    service-url:
+      defaultZone: ${DEFAULT_ZONE}
+  server:
+    enable-self-preservation: ${EUREKA_ENABLE_SELF_PRESERVATION}
+    eviction-interval-timer-in-ms: ${EUREKA_EVICTION_INTERVAL}
+
+management:
+  health:
+    rabbit:
+      enabled: false
