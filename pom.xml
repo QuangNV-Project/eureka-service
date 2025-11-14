@@ -58,6 +58,10 @@
             <id>github-utility-shared</id>
             <url>https://maven.pkg.github.com/QuangNV-Project/utility-shared</url>
         </repository>
+        <repository>
+            <id>github-common-web</id>
+            <url>https://maven.pkg.github.com/QuangNV-Project/common-web</url>
+        </repository>
     </repositories>
 
     <dependencies>
