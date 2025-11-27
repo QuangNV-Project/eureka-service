@@ -224,8 +224,8 @@ pipeline {
                         // Stop & remove old container
                         sh """
                             ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                docker stop ${DOCKERHUB_IMAGE} || true
-                                docker rm ${DOCKERHUB_IMAGE} || true
+                                docker stop eureka-service || true
+                                docker rm eureka-service || true
                             '
                         """
 
@@ -278,8 +278,8 @@ pipeline {
                         // Stop & remove old container
                         sh """
                             ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                docker stop ${DOCKERHUB_IMAGE} || true
-                                docker rm ${DOCKERHUB_IMAGE} || true
+                                docker stop eureka-service || true
+                                docker rm eureka-service || true
                             '
                         """
 
