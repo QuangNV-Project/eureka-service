@@ -13,13 +13,19 @@
 
     <properties>
         <java.version>21</java.version>
-        <spring-boot.version>3.3.5</spring-boot.version>
-        <spring-cloud.version>2023.0.0</spring-cloud.version>
+        <spring-boot.version>3.5.0</spring-boot.version>
+        <spring-cloud.version>2025.0.0</spring-cloud.version>
         <lombok.version>1.18.30</lombok.version>
+        <utility-shared.version>1.0.4-SNAPSHOT</utility-shared.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>com.quangnv.service</groupId>
+                <artifactId>utility-shared</artifactId>
+                <version>${utility-shared.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
@@ -49,8 +55,12 @@
 
     <repositories>
         <repository>
-            <id>github</id>
+            <id>github-utility-shared</id>
             <url>https://maven.pkg.github.com/QuangNV-Project/utility-shared</url>
+        </repository>
+        <repository>
+            <id>github-common-web</id>
+            <url>https://maven.pkg.github.com/QuangNV-Project/common-web</url>
         </repository>
     </repositories>
 
@@ -58,7 +68,6 @@
         <dependency>
             <groupId>com.quangnv.service</groupId>
             <artifactId>utility-shared</artifactId>
-            <version>1.0.0</version>
         </dependency>
         <dependency>
             <groupId>me.paulschwarz</groupId>
