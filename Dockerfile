@@ -16,6 +16,10 @@ WORKDIR /app
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
+# Create logs directory with appropriate permissions
+RUN mkdir -p /app/logs \
+    && chown -R appuser:appgroup /app
+
 # Copy only the JAR from build stage
 COPY --from=build /app/target/*.jar app.jar
 
