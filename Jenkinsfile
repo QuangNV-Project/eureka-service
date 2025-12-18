@@ -316,10 +316,27 @@ pipeline {
                     string(credentialsId: 'telegram-bot-token', variable: 'TELEGRAM_BOT_TOKEN'),
                     string(credentialsId: 'telegram-chat-id', variable: 'TELEGRAM_CHAT_ID')
                 ]) {
+
+                    def message = """
+        ✅ *PIPELINE SUCCESS*
+
+        📦 Project: *Eureka Service*
+        🧩 Job: *${env.JOB_NAME}*
+        🔢 Build: #${env.BUILD_NUMBER}
+        🌿 Branch: ${env.GIT_BRANCH ?: 'N/A'}
+        🧾 Commit: ${env.GIT_COMMIT?.take(7) ?: 'N/A'}
+        ⏱ Duration: ${currentBuild.durationString}
+        👤 Triggered by: ${env.BUILD_USER ?: 'System'}
+
+        🔗 Build URL:
+        ${env.BUILD_URL}
+        """.stripIndent()
+
                     sh """
-                        curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \
-                        -d chat_id=$TELEGRAM_CHAT_ID \
-                        -d text="✅ Pipeline succeeded! Project: Eureka Service Job: $JOB_NAME (#$BUILD_NUMBER)"
+                      curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \
+                      -d chat_id=$TELEGRAM_CHAT_ID \
+                      -d parse_mode=Markdown \
+                      --data-urlencode text="$message"
                     """
                 }
             }
@@ -331,14 +348,34 @@ pipeline {
                     string(credentialsId: 'telegram-bot-token', variable: 'TELEGRAM_BOT_TOKEN'),
                     string(credentialsId: 'telegram-chat-id', variable: 'TELEGRAM_CHAT_ID')
                 ]) {
+
+                    def message = """
+        ❌ *PIPELINE FAILED*
+
+        📦 Project: *Eureka Service*
+        🧩 Job: *${env.JOB_NAME}*
+        🔢 Build: #${env.BUILD_NUMBER}
+        🌿 Branch: ${env.GIT_BRANCH ?: 'N/A'}
+        🧾 Commit: ${env.GIT_COMMIT?.take(7) ?: 'N/A'}
+        ⏱ Duration: ${currentBuild.durationString}
+        👤 Triggered by: ${env.BUILD_USER ?: 'System'}
+
+        🚨 Status: *${currentBuild.currentResult}*
+
+        🔗 Build URL:
+        ${env.BUILD_URL}
+        """.stripIndent()
+
                     sh """
-                        curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \
-                        -d chat_id=$TELEGRAM_CHAT_ID \
-                        -d text="❌ Pipeline failed! Project: Eureka Service Job: $JOB_NAME (#$BUILD_NUMBER)"
+                      curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \
+                      -d chat_id=$TELEGRAM_CHAT_ID \
+                      -d parse_mode=Markdown \
+                      --data-urlencode text="$message"
                     """
                 }
             }
         }
+
         cleanup {
             script {
                 sh 'docker logout || true'
