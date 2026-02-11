@@ -16,7 +16,7 @@
         <spring-boot.version>3.5.0</spring-boot.version>
         <spring-cloud.version>2025.0.0</spring-cloud.version>
         <lombok.version>1.18.30</lombok.version>
-        <utility-shared.version>1.0.4-SNAPSHOT</utility-shared.version>
+        <utility-shared.version>1.0.15-SNAPSHOT</utility-shared.version>
     </properties>
 
     <dependencyManagement>
