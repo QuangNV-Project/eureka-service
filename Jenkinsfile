@@ -293,7 +293,7 @@ pipeline {
 
                                 echo "Running on Server PROD -> Port: \$PORT"
 
-                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE --network prod-network -p \$PORT:\$PORT -v /logs/eureka-service:/app/logs --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
+                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE --network prod-network -p \$PORT:\$PORT -v /home/quangnv/logs/eureka-service:/app/logs --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
                             '
                         """
 
