@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration scan="true" scanPeriod="30 seconds">
-    <property name="LOG_PATH" value="logs"/>
+    <springProfile name="local,dev">
+        <property name="LOG_PATH" value="logs"/>
+    </springProfile>
+
+    <springProfile name="prod">
+        <property name="LOG_PATH" value="/app/logs"/>
+    </springProfile>
+
     <property name="LOG_FILE" value="${LOG_PATH}/log.log"/>
 
     <!-- Console Appender -->
