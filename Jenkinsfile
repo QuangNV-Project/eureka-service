@@ -282,6 +282,14 @@ pipeline {
                                 docker rm eureka-service || true
                             '
                         """
+                        // Create and set permissions for logs directory
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
+                            sudo mkdir -p /logs/config-service
+                            sudo chown -R 1001:1001 /logs/config-service
+                            sudo chmod -R 755 /logs/config-service
+                            '
+                        """
 
                         // Run new container
                         sh """
