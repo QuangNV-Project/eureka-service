@@ -14,7 +14,12 @@ RUN mvn package -DskipTests -B
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+ARG USER_ID=1001
+ARG GROUP_ID=1001
+
+# Tạo group và user với ID cụ thể
+RUN addgroup -g $GROUP_ID -S appgroup && \
+    adduser -u $USER_ID -S appuser -G appgroup
 
 # Create logs directory with appropriate permissions
 RUN mkdir -p /app/logs \
