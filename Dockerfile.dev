@@ -1,0 +1,12 @@
+FROM maven:3.9.11-eclipse-temurin-21-alpine AS build
+WORKDIR /app
+COPY pom.xml .
+COPY src ./src
+RUN --mount=type=secret,id=maven_settings,target=/root/.m2/settings.xml \
+    mvn package -DskipTests -B
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && mkdir -p /app/logs && chown -R appuser:appgroup /app
+COPY --from=build /app/target/*.jar app.jar
+USER appuser
+ENTRYPOINT ["java", "-jar", "app.jar"]
