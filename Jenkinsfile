@@ -1,305 +1,151 @@
 pipeline {
     agent any
 
-    tools {
-        maven 'Maven'
-        jdk 'JDK21'
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '5'))
     }
 
     environment {
-        // Docker Hub credentials (configure in Jenkins Credentials)
         DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
         DOCKERHUB_IMAGE = 'quangnv1911/eureka-service'
-
-        // GitHub credentials for Maven (configure in Jenkins)
-        GITHUB_CREDENTIALS = credentials('github-credentials')
-
-        // Dynamic variables
-        IMAGE_TAG = ''
-        SPRING_PROFILE = ''
-        BRANCH_NAME = "${env.GIT_BRANCH.replaceFirst(/^origin\//, '')}"
-        SHOULD_DEPLOY = 'false'
-
-        // Maven
-        MAVEN_OPTS = '-Xmx1024m'
-        MAVEN_SETTINGS_FILE = '.m2/settings.xml'
-        MAVEN_LOCAL_REPO = "${env.WORKSPACE}/.m2_cache/repository"
-
-        // Job data
-        JOB_NAME = "${env.JOB_NAME}"
-        BUILD_NUMBER = "${env.BUILD_NUMBER}"
+        BUILDX_BUILDER = 'eureka-service-builder'
     }
 
     stages {
-        // ================================================
-        // 1️⃣ SETUP & DETERMINE ENVIRONMENT
-        // ================================================
-        stage('Setup Environment') {
+        stage('Checkout') { steps { checkout scm } }
+
+        stage('Resolve deployment context') {
             steps {
                 script {
-                    echo "Current branch: ${BRANCH_NAME}"
-
-                    if (BRANCH_NAME == 'main') {
-                        IMAGE_TAG = 'prod'
-                        SPRING_PROFILE = 'prod'
-                        SHOULD_DEPLOY = 'true'
-                    } else if (BRANCH_NAME == 'dev') {
-                        IMAGE_TAG = 'dev'
-                        SPRING_PROFILE = 'dev'
-                        SHOULD_DEPLOY = 'true'
+                    def branch = (env.BRANCH_NAME ?: env.GIT_BRANCH ?: sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()).replaceFirst(/^origin\//, '')
+                    if (!(branch in ['dev', 'main'])) {
+                        echo "Branch ${branch} is outside the deployment scope."
+                        return
                     }
-
-                    env.IMAGE_TAG = IMAGE_TAG
-                    env.SPRING_PROFILE = SPRING_PROFILE
-                    env.SHOULD_DEPLOY = SHOULD_DEPLOY
-
-                    echo "✅ Branch: ${BRANCH_NAME}"
-                    echo "✅ Image Tag: ${IMAGE_TAG}"
-                    echo "✅ Spring Profile: ${SPRING_PROFILE}"
-                    echo "✅ Should Deploy: ${SHOULD_DEPLOY}"
+                    def commit = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
+                    if (!(commit ==~ /[0-9a-f]{12}/)) { error('Could not resolve a valid Git commit SHA') }
+                    env.DEPLOY_BRANCH = branch
+                    env.DEPLOY_ENV = branch == 'dev' ? 'dev' : 'prod'
+                    env.REQUIRE_PROD_APPROVAL = (env.REQUIRE_PROD_APPROVAL ?: 'false').toBoolean().toString()
+                    env.IMAGE_ALIAS = branch == 'dev' ? 'dev' : 'prod'
+                    env.IMAGE_VERSION = "${env.BUILD_NUMBER}-${commit}"
+                    env.IMAGE_REF = "${env.DOCKERHUB_IMAGE}:${env.IMAGE_VERSION}"
+                    env.CACHE_REF = "${env.DOCKERHUB_IMAGE}:buildcache-${env.DEPLOY_ENV}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${branch} ${commit}"
+                    echo "Deploy environment=${env.DEPLOY_ENV}, image=${env.IMAGE_REF}, requireProdApproval=${env.REQUIRE_PROD_APPROVAL}"
                 }
             }
         }
 
-        // Cache maven
-        stage('Restore Maven Cache') {
+        stage('Preflight Jenkins agent') {
+            when { expression { env.DEPLOY_ENV in ['dev', 'prod'] } }
             steps {
-                script {
-                    echo "Restoring Maven cache (if available) from last successful build..."
-                    try {
-                        // requires Copy Artifact plugin; optional so pipeline continues if unavailable
-                        copyArtifacts(projectName: env.JOB_NAME, selector: lastSuccessful(), filter: '.m2_cache/**', optional: true)
-                        echo "✅ Maven cache restored (if present)"
-                    } catch (err) {
-                        echo "No previous cache available or copyArtifacts not configured: ${err}"
-                    }
+                sh '''#!/usr/bin/env bash
+                    set -Eeuo pipefail
+                    docker version --format '{{.Server.Version}}'
+                    docker buildx version
+                    if ! docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
+                      docker buildx create --name "$BUILDX_BUILDER" --driver docker-container --use
+                    else
+                      docker buildx use "$BUILDX_BUILDER"
+                    fi
+                    docker buildx inspect --bootstrap
+                '''
+            }
+        }
+
+        stage('Registry login') {
+            when { expression { env.DEPLOY_ENV in ['dev', 'prod'] } }
+            steps {
+                sh '''#!/usr/bin/env bash
+                    set -Eeuo pipefail
+                    printf '%s' "$DOCKERHUB_CREDENTIALS_PSW" | docker login -u "$DOCKERHUB_CREDENTIALS_USR" --password-stdin
+                '''
+            }
+        }
+
+        stage('Run DEV unit tests') {
+            when { expression { env.DEPLOY_ENV == 'dev' } }
+            steps {
+                configFileProvider([configFile(fileId: 'maven-settings', variable: 'MAVEN_SETTINGS_PATH')]) {
+                    sh '''#!/usr/bin/env bash
+                        set -Eeuo pipefail
+                        docker buildx build --builder "$BUILDX_BUILDER" --target test \
+                          --secret id=maven_settings,src="$MAVEN_SETTINGS_PATH" \
+                          --cache-from type=registry,ref="$CACHE_REF" \
+                          --cache-to type=registry,ref="$CACHE_REF",mode=max .
+                    '''
                 }
             }
         }
 
-        // ================================================
-        // 2️⃣ PREPARE MAVEN SETTINGS
-        // ================================================
-        stage('Prepare Maven Settings') {
+        stage('Build and push immutable image') {
+            when { expression { env.DEPLOY_ENV in ['dev', 'prod'] } }
             steps {
-                script {
-                     configFileProvider([configFile(fileId: 'maven-settings', variable: 'MAVEN_SETTINGS_PATH')]) {
-                         sh 'mkdir -p .m2'
-                         sh "cp ${MAVEN_SETTINGS_PATH} ${MAVEN_SETTINGS_FILE}"
-                         sh "mkdir -p ${MAVEN_LOCAL_REPO}"
-                     }
+                configFileProvider([configFile(fileId: 'maven-settings', variable: 'MAVEN_SETTINGS_PATH')]) {
+                    sh '''#!/usr/bin/env bash
+                        set -Eeuo pipefail
+                        docker buildx build --builder "$BUILDX_BUILDER" --target runtime \
+                          --secret id=maven_settings,src="$MAVEN_SETTINGS_PATH" \
+                          --cache-from type=registry,ref="$CACHE_REF" \
+                          --cache-to type=registry,ref="$CACHE_REF",mode=max \
+                          --tag "$IMAGE_REF" --push .
+                    '''
                 }
             }
         }
 
-        // ================================================
-        // 3️⃣ RUN BASIC TESTS (for non-dev/main branches)
-        // ================================================
-        stage('Run Tests') {
-            when {
-                expression { SHOULD_DEPLOY == 'false' }
-            }
+        stage('Approve production deployment') {
+            when { expression { env.DEPLOY_ENV == 'prod' && env.REQUIRE_PROD_APPROVAL == 'true' } }
             steps {
                 script {
-                    echo "Running basic tests for branch: ${BRANCH_NAME}"
+                    timeout(time: 30, unit: 'MINUTES') {
+                        input(
+                            id: "eureka-service-prod-${env.BUILD_NUMBER}",
+                            message: """
+PRODUCTION RELEASE GATE
 
-                    sh """
-                        mvn -s ${MAVEN_SETTINGS_FILE} -Dmaven.repo.local=${MAVEN_LOCAL_REPO} clean test
-                    """
+Service:       eureka-service
+Environment:   PROD
+Image:         ${env.IMAGE_REF}
+Version:       ${env.IMAGE_VERSION}
+Build:         #${env.BUILD_NUMBER}
 
-                    echo "✅ Tests completed successfully"
-                }
-            }
-        }
+Deployment policy (superseded by current behavior below):
+  • Recreate one application instance
+  • Readiness + Eureka registration gate
+  • Two-minute stability soak
+  • Automatic rollback to the previous immutable version on failure
 
-        // ================================================
-        // 4️⃣ BUILD & PUSH DOCKER IMAGE (only for dev/main)
-        // ================================================
-        stage('Build Docker Image') {
-            when {
-                expression { SHOULD_DEPLOY == 'true' }
-            }
-            steps {
-                script {
-                    echo "Building Docker image..."
+Current behavior: deployment is committed immediately after the new container starts; health, Eureka, and soak checks are not executed, so they cannot trigger rollback.
 
-                    // try to pull previous images to use as cache
-                    sh """
-                        docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG} || true
-                        docker pull ${DOCKERHUB_IMAGE}:latest || true
-                    """
-
-                    // Build Docker image using cache-from to speed up builds
-                    sh """
-                        docker build \
-                            --build-arg SPRING_PROFILE=${SPRING_PROFILE} \
-                            --cache-from ${DOCKERHUB_IMAGE}:${IMAGE_TAG} \
-                            --cache-from ${DOCKERHUB_IMAGE}:latest \
-                            -t ${DOCKERHUB_IMAGE}:${IMAGE_TAG} .
-                    """
-
-                    echo "✅ Docker image built successfully"
-                }
-            }
-        }
-
-        stage('Push Docker Image') {
-            when {
-                expression { SHOULD_DEPLOY == 'true' }
-            }
-            steps {
-                script {
-                    echo "Pushing Docker image to Docker Hub..."
-
-                    // Login to Docker Hub
-                    sh """
-                        echo ${DOCKERHUB_CREDENTIALS_PSW} | docker login -u ${DOCKERHUB_CREDENTIALS_USR} --password-stdin
-                    """
-
-                    // Push image
-                    sh """
-                        docker push ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
-                    """
-
-                    echo "✅ Docker image pushed successfully"
-                }
-            }
-        }
-
-        // Save Maven cache for future builds
-        stage('Save Maven Cache') {
-            steps {
-                script {
-                    echo "Saving Maven cache for future builds..."
-                    sh "mkdir -p ${env.WORKSPACE}/.m2_cache"
-                    archiveArtifacts artifacts: '.m2_cache/**', onlyIfSuccessful: true, allowEmptyArchive: true
-                    echo "✅ Maven cache archived (if present)"
-                }
-            }
-        }
-
-        // ================================================
-        // 5️⃣ CLEANUP LOCAL IMAGES
-        // ================================================
-        stage('Cleanup Local Images') {
-            when {
-                expression { SHOULD_DEPLOY == 'true' }
-            }
-            steps {
-                script {
-                    echo "Cleaning up local Docker images..."
-                    sh 'docker image prune -af || true'
-                    echo "✅ Cleanup completed"
-                }
-            }
-        }
-
-        // ================================================
-        // 6️⃣ DEPLOY TO SERVERS
-        // ================================================
-        // Deploy to DEV Server
-        // ================================================
-        stage('Deploy to DEV Server') {
-            when {
-                expression { BRANCH_NAME == 'dev' }
-            }
-            steps {
-                script {
-                    echo "🚀 Deploying to DEV Server..."
-
-                    withCredentials([
-                        string(credentialsId: 'remote-server-dev-host', variable: 'REMOTE_HOST'),
-                        string(credentialsId: 'remote-server-dev-user', variable: 'REMOTE_USER'),
-                        string(credentialsId: 'remote-server-dev-port', variable: 'REMOTE_PORT'),
-                        sshUserPrivateKey(credentialsId: 'remote-ssh-key-dev', keyFileVariable: 'SSH_KEY')
-                    ]) {
-                        // Pull latest image
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                echo "Pulling latest image..."
-                                docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
-                            '
-                        """
-
-                        // Stop & remove old container
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                docker stop eureka-service || true
-                                docker rm eureka-service || true
-                            '
-                        """
-
-                        // Run new container
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i $SSH_KEY -p $REMOTE_PORT $REMOTE_USER@$REMOTE_HOST '
-                                ENV_FILE=".env.dev"
-                                PORT_VAR="EUREKA_SERVICE_PORT"
-                                source ./infra/\${ENV_FILE}
-                                eval "PORT=\\\$\${PORT_VAR}"
-
-                                echo "Running on Server DEV -> Port: \$PORT"
-
-                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE --network dev-network -p \$PORT:\$PORT -v /logs/eureka-service:/app/logs --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
-                            '
-                        """
-
-                        echo "✅ Deployed to DEV Server successfully"
+Build details:
+${env.BUILD_URL}
+                            """.stripIndent().trim(),
+                            ok: 'Deploy to PROD',
+                            cancel: 'Abort release'
+                        )
                     }
                 }
             }
         }
 
-        // ================================================
-        // Deploy to PROD Server
-        // ================================================
-        stage('Deploy to PROD Server') {
-            when {
-                expression { BRANCH_NAME == 'main' }
-            }
+        stage('Deploy') {
+            when { expression { env.DEPLOY_ENV in ['dev', 'prod'] } }
+            steps { script { deployService() } }
+        }
+
+        stage('Promote environment alias') {
+            when { expression { env.DEPLOY_ENV in ['dev', 'prod'] } }
             steps {
-                script {
-                    echo "🚀 Deploying to PROD Server..."
-
-                    // Get SSH credentials from Jenkins
-                    withCredentials([
-                        string(credentialsId: 'remote-server-prod-host', variable: 'REMOTE_HOST'),
-                        string(credentialsId: 'remote-server-prod-user', variable: 'REMOTE_USER'),
-                        string(credentialsId: 'remote-server-prod-port', variable: 'REMOTE_PORT'),
-                        sshUserPrivateKey(credentialsId: 'remote-ssh-key-prod', keyFileVariable: 'SSH_KEY')
-                    ]) {
-                        // Pull latest image
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                echo "Pulling latest image..."
-                                docker pull ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
-                            '
-                        """
-
-                        // Stop & remove old container
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i ${SSH_KEY} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} '
-                                docker stop eureka-service || true
-                                docker rm eureka-service || true
-                            '
-                        """
-
-                        // Run new container
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i $SSH_KEY -p $REMOTE_PORT $REMOTE_USER@$REMOTE_HOST '
-                                ENV_FILE=".env.prod"
-                                PORT_VAR="EUREKA_SERVICE_PORT"
-                                source ./infra/\${ENV_FILE}
-                                eval "PORT=\\\$\${PORT_VAR}"
-
-                                echo "Running on Server PROD -> Port: \$PORT"
-
-                                docker run -d --name eureka-service --env-file ./infra/\$ENV_FILE --network prod-network -p \$PORT:\$PORT -v /logs/eureka-service:/app/logs --restart unless-stopped ${DOCKERHUB_IMAGE}:${IMAGE_TAG}
-                            '
-                        """
-
-                        echo "✅ Deployed to PROD Server successfully"
-                    }
-                }
+                sh '''#!/usr/bin/env bash
+                    set -Eeuo pipefail
+                    docker buildx imagetools create --tag "$DOCKERHUB_IMAGE:$IMAGE_ALIAS" "$IMAGE_REF"
+                '''
             }
         }
     }
@@ -307,80 +153,84 @@ pipeline {
     post {
         always {
             script {
-                echo "Pipeline execution completed"
+                sendTelegram(
+                    currentBuild.currentResult ?: 'UNKNOWN',
+                    'See the Jenkins build for deployment details.'
+                )
             }
         }
-
-        success {
-            script {
-                withCredentials([
-                    string(credentialsId: 'telegram-bot-token', variable: 'TELEGRAM_BOT_TOKEN'),
-                    string(credentialsId: 'telegram-chat-id', variable: 'TELEGRAM_CHAT_ID')
-                ]) {
-
-                    def message = """
-        ✅ *PIPELINE SUCCESS*
-
-        📦 Project: *Eureka Service*
-        🧩 Job: *${env.JOB_NAME}*
-        🔢 Build: #${env.BUILD_NUMBER}
-        🌿 Branch: ${env.GIT_BRANCH ?: 'N/A'}
-        🧾 Commit: ${env.GIT_COMMIT?.take(7) ?: 'N/A'}
-        ⏱ Duration: ${currentBuild.durationString}
-        👤 Triggered by: ${env.BUILD_USER ?: 'System'}
-
-        🔗 Build URL:
-        ${env.BUILD_URL}
-        """.stripIndent()
-
-                    sh """
-                      curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \
-                      -d chat_id=$TELEGRAM_CHAT_ID \
-                      -d parse_mode=Markdown \
-                      --data-urlencode text="$message"
-                    """
-                }
-            }
-        }
-
-        failure {
-            script {
-                withCredentials([
-                    string(credentialsId: 'telegram-bot-token', variable: 'TELEGRAM_BOT_TOKEN'),
-                    string(credentialsId: 'telegram-chat-id', variable: 'TELEGRAM_CHAT_ID')
-                ]) {
-
-                    def message = """
-        ❌ *PIPELINE FAILED*
-
-        📦 Project: *Eureka Service*
-        🧩 Job: *${env.JOB_NAME}*
-        🔢 Build: #${env.BUILD_NUMBER}
-        🌿 Branch: ${env.GIT_BRANCH ?: 'N/A'}
-        🧾 Commit: ${env.GIT_COMMIT?.take(7) ?: 'N/A'}
-        ⏱ Duration: ${currentBuild.durationString}
-        👤 Triggered by: ${env.BUILD_USER ?: 'System'}
-
-        🚨 Status: *${currentBuild.currentResult}*
-
-        🔗 Build URL:
-        ${env.BUILD_URL}
-        """.stripIndent()
-
-                    sh """
-                      curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \
-                      -d chat_id=$TELEGRAM_CHAT_ID \
-                      -d parse_mode=Markdown \
-                      --data-urlencode text="$message"
-                    """
-                }
-            }
-        }
-
         cleanup {
-            script {
-                sh 'docker logout || true'
-            }
+            sh '''#!/usr/bin/env bash
+                docker buildx prune --builder "$BUILDX_BUILDER" -f --filter until=168h || true
+                docker logout || true
+            '''
+        }
+    }
+}
+
+def deployService() {
+    def config = env.DEPLOY_ENV == 'dev'
+        ? [host: 'remote-server-dev-host', user: 'remote-server-dev-user', port: 'remote-server-dev-port', key: 'remote-ssh-key-dev', envFile: 'remote-server-dev-env-file', network: 'dev-network']
+        : [host: 'remote-server-prod-host', user: 'remote-server-prod-user', port: 'remote-server-prod-port', key: 'remote-ssh-key-prod', envFile: 'remote-server-prod-env-file', network: 'prod-network']
+
+    withCredentials([
+        string(credentialsId: config.host, variable: 'REMOTE_HOST'),
+        string(credentialsId: config.user, variable: 'REMOTE_USER'),
+        string(credentialsId: config.port, variable: 'REMOTE_PORT'),
+        string(credentialsId: config.envFile, variable: 'REMOTE_ENV_FILE'),
+        sshUserPrivateKey(credentialsId: config.key, keyFileVariable: 'SSH_KEY')
+    ]) {
+        withEnv(["DOCKER_NETWORK=${config.network}"]) {
+            sh '''#!/usr/bin/env bash
+                set -Eeuo pipefail
+                chmod 600 "$SSH_KEY"
+                ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+                  -i "$SSH_KEY" -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" \
+                  "env DEPLOY_ENV='$DEPLOY_ENV' IMAGE_REF='$IMAGE_REF' IMAGE_VERSION='$IMAGE_VERSION' DOCKER_NETWORK='$DOCKER_NETWORK' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' JENKINS_BUILD_NUMBER='$BUILD_NUMBER' bash -s" \
+                  < infra/deploy.sh
+            '''
+        }
+    }
+}
+
+def sendTelegram(status, details) {
+    def statusIcon = [
+        SUCCESS : '✅',
+        FAILURE : '❌',
+        UNSTABLE: '⚠️',
+        ABORTED : '⏹️'
+    ][status] ?: 'ℹ️'
+    def escapeHtml = { value ->
+        value.toString()
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+    }
+    def message = """${statusIcon} <b>eureka-service deployment</b>
+
+<b>Status:</b> <code>${escapeHtml(status)}</code>
+<b>Build:</b> <code>#${escapeHtml(env.BUILD_NUMBER)}</code>
+<b>Environment:</b> <code>${escapeHtml(env.DEPLOY_ENV ?: 'N/A')}</code>
+<b>Version:</b> <code>${escapeHtml(env.IMAGE_VERSION ?: 'N/A')}</code>
+
+${escapeHtml(details).replace('\n', '<br/>')}
+
+🔗 <a href="${escapeHtml(env.BUILD_URL ?: '')}">Open Jenkins build</a>"""
+
+    withCredentials([
+        string(credentialsId: 'telegram-bot-token', variable: 'TELEGRAM_BOT_TOKEN'),
+        string(credentialsId: 'telegram-chat-id', variable: 'TELEGRAM_CHAT_ID')
+    ]) {
+        withEnv(["TELEGRAM_MESSAGE=${message}"]) {
+            sh '''#!/usr/bin/env bash
+            set -Eeuo pipefail
+            if ! curl -fsS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+              -d "chat_id=$TELEGRAM_CHAT_ID" \
+              -d 'parse_mode=HTML' \
+              --data-urlencode "text=$TELEGRAM_MESSAGE"; then
+              echo 'Telegram notification failed; pipeline result is unchanged.' >&2
+            fi
+            '''
         }
     }
 }

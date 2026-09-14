@@ -1,34 +1,42 @@
-# 1. Build stage
-FROM maven:3.9.11-eclipse-temurin-21-alpine AS build
+# syntax=docker/dockerfile:1.7
+
+FROM maven:3.9.11-eclipse-temurin-21-alpine AS dependencies
+
 WORKDIR /app
 
-# Copy pom.xml và tải dependencies trước (cache tốt hơn)
-COPY .m2/settings.xml /root/.m2/settings.xml
 COPY pom.xml .
 
-# Copy source code và build
-COPY src ./src
-RUN mvn package -DskipTests -B
+RUN --mount=type=cache,id=eureka-service-maven-repository,target=/root/.m2/repository \
+    --mount=type=secret,id=maven_settings,target=/root/.m2/settings.xml,required=true \
+    mvn -s /root/.m2/settings.xml -B -ntp dependency:go-offline
 
-# 2. Runtime stage
-FROM eclipse-temurin:21-jre-alpine
+FROM dependencies AS test
+
+COPY src ./src
+
+RUN --mount=type=cache,id=eureka-service-maven-repository,target=/root/.m2/repository \
+    --mount=type=secret,id=maven_settings,target=/root/.m2/settings.xml,required=true \
+    mvn -s /root/.m2/settings.xml -B -ntp test
+
+FROM dependencies AS package
+
+COPY src ./src
+
+RUN --mount=type=cache,id=eureka-service-maven-repository,target=/root/.m2/repository \
+    --mount=type=secret,id=maven_settings,target=/root/.m2/settings.xml,required=true \
+    mvn -s /root/.m2/settings.xml -B -ntp -DskipTests package
+
+FROM eclipse-temurin:21-jre-alpine AS runtime
+
 WORKDIR /app
 
-ARG USER_ID=1001
-ARG GROUP_ID=1001
-
-# Tạo group và user với ID cụ thể
-RUN addgroup -g $GROUP_ID -S appgroup && \
-    adduser -u $USER_ID -S appuser -G appgroup
-
-# Create logs directory with appropriate permissions
-RUN mkdir -p /app/logs \
+RUN addgroup -S appgroup \
+    && adduser -S appuser -G appgroup \
+    && mkdir -p /app/logs \
     && chown -R appuser:appgroup /app
 
-# Copy only the JAR from build stage
-COPY --from=build /app/target/*.jar app.jar
+COPY --from=package --chown=appuser:appgroup /app/target/*.jar /app/app.jar
 
 USER appuser
 
-# Run the application
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
